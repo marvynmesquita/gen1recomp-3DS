@@ -1,0 +1,13 @@
+Place your Pokemon GEN 1 ROM files (.gb format) in this folder.
+
+Compatible ROMs:
+  - Pokemon Red (.gb)
+  - Pokemon Blue (.gb)
+  - Pokemon Yellow (.gb)
+
+NOTE: Only Generation 1 Pokemon games are currently supported.
+      Gen 2 (.gbc) and other generations are NOT yet supported.
+
+Example:
+  sdmc:/3ds/gen1recomp3ds/roms/pokemon_red.gb
+  sdmc:/3ds/gen1recomp3ds/roms/pokemon_blue.gb

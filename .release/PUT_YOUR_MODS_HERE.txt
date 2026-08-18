@@ -1,0 +1,10 @@
+Place your mod folders in this directory.
+
+Each mod should be its own subfolder containing a modinfo.lua
+file at its root.
+
+NOTE: Mod support is a work in progress (WIP).
+      Not all mod features are functional yet.
+
+Example structure:
+  sdmc:/3ds/gen1recomp3ds/mods/my_mod/modinfo.lua

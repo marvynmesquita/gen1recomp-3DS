@@ -1,0 +1,57 @@
+name: Build 3DS
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install devkitPro
+        uses: devkitpro/action-install-pacman@v1
+        with:
+          packages: |
+
+      - name: Build
+        env:
+          DEVKITPRO: /opt/devkitpro
+          DEVKITARM: /opt/devkitpro/devkitARM
+        run: |
+          export PATH="$DEVKITARM/bin:$PATH"
+          make -j$(nproc)
+
+      - name: Prepare release package
+        run: |
+          mkdir -p package/3ds/gen1recomp3ds/roms
+          mkdir -p package/3ds/gen1recomp3ds/mods
+          cp gen1recomp3ds.3dsx package/3ds/gen1recomp3ds/
+          cp .release/options.lua package/3ds/gen1recomp3ds/
+          cp .release/PUT_YOUR_GB_AND_GBC_ROMS_HERE.txt "package/3ds/gen1recomp3ds/roms/PUT YOUR GB AND GBC ROMS HERE.txt"
+          cp .release/PUT_YOUR_MODS_HERE.txt "package/3ds/gen1recomp3ds/mods/PUT YOUR MODS HERE.txt"
+
+      - name: Create zip
+        run: |
+          cd package
+          zip -r ../gen1recomp3ds.zip .
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gen1recomp3ds
+          path: gen1recomp3ds.zip
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: gen1recomp3ds.zip
+          generate_release_notes: true

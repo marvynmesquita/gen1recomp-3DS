@@ -1,0 +1,76 @@
+# ── Build artifacts ──
+*.3dsx
+*.elf
+*.smdh
+*.cias
+*.app
+*.dmp
+*.map
+*.lst
+*.o
+*.d
+*.a
+a.out
+build/
+
+# ── Logs ──
+*.log
+log*.txt
+citra_log.txt
+
+# ── ROM files (users must supply their own) ──
+*.gb
+*.gbc
+
+# ── Backup files ──
+*.bak
+*.bak.*
+
+# ── Crash dumps ──
+crash_dump_*
+*.dmp
+
+# ── Test / temporary files ──
+test_*.c
+test_*.cpp
+test_*.py
+test_*.lua
+test_*.sh
+test
+test_align
+test_morton*
+swizz_test*.py
+swizzle_test*.py
+test.py
+test.cpp
+test_z.cpp
+
+# ── Reference repos (cloned separately, not vendored) ──
+gen1recomp-dev/
+love_package/
+lovepotion_dist/
+lovepotion_src/
+LovePotion/
+citra/
+
+# ── OS files ──
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── IDE files ──
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── Misc ──
+game.love
+data/generated/
+
+# ── Repro / test demos ──
+repro_*/
+test_align*
+test_morton*
+a.out
