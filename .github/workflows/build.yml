@@ -11,27 +11,20 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    container:
+      image: devkitpro/devkitarm
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install devkitPro
+      - name: Install dependencies
         run: |
-          wget -q https://apt.devkitpro.org/install-devkitpro-pacman -O /tmp/install-devkitpro-pacman
-          chmod +x /tmp/install-devkitpro-pacman
-          yes | sudo /tmp/install-devkitpro-pacman || true
-          sudo dkp-pacman -Sy --noconfirm
-          sudo dkp-pacman -S --noconfirm 3ds-dev
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq zip
 
       - name: Build
-        env:
-          DEVKITPRO: /opt/devkitpro
-          DEVKITARM: /opt/devkitpro/devkitARM
-        run: |
-          export PATH="$DEVKITARM/bin:$PATH"
-          make clean
-          make -j$(nproc)
+        run: make clean && make -j$(nproc)
 
       - name: Prepare release package
         run: |
