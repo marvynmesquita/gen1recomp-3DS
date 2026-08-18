@@ -17,9 +17,12 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install devkitPro
-        uses: devkitpro/action-install-pacman@v1
-        with:
-          packages: |
+        run: |
+          wget -q https://apt.devkitpro.org/install-devkitpro-pacman -O /tmp/install-devkitpro-pacman
+          chmod +x /tmp/install-devkitpro-pacman
+          yes | sudo /tmp/install-devkitpro-pacman || true
+          sudo dkp-pacman -Sy --noconfirm
+          sudo dkp-pacman -S --noconfirm 3ds-dev
 
       - name: Build
         env:
@@ -27,6 +30,7 @@ jobs:
           DEVKITARM: /opt/devkitpro/devkitARM
         run: |
           export PATH="$DEVKITARM/bin:$PATH"
+          make clean
           make -j$(nproc)
 
       - name: Prepare release package
