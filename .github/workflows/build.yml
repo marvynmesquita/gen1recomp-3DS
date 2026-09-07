@@ -24,7 +24,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq zip
-          sudo dkp-pacman -Sy --noconfirm --needed 3ds-dev
+          sudo dkp-pacman -Syu --noconfirm --needed 3ds-dev
 
       - name: Build
         run: make clean && make cia
