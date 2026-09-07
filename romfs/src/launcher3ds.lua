@@ -153,6 +153,13 @@ local function loadSettings()
       end
     end
   end
+  -- NOTE: in-game launcher menu (L+R+START) intentionally removed.
+  -- The wrapper handlers (gameKeypressed / gameUpdate) retained stale Lua
+  -- module references after returning to the launcher, preventing the GC
+  -- from reclaiming ~6 MB of game graphics and causing "not enough memory"
+  -- on the next ROM import.  Without the wrappers, the game's own handlers
+  -- stay untouched and a process restart is needed to switch ROMs.
+  love.graphics._drawBottom = nil
 end
 
 local function saveSettings()
@@ -432,19 +439,16 @@ boot = function(version)
   -- Restore the game's own love.update and love.draw from main.lua.
   if pristineUpdate then love.update = pristineUpdate end
   if pristineDraw then love.draw = pristineDraw end
-  -- NOW capture the game's live handlers so exitToLauncher() can restore
-  -- them on the next return.
-  savedUpdate = love.update
-  savedDraw = love.draw
-  -- Install the game-menu wrappers.  These call saved* (the game's real
-  -- handlers) for key input, and only intercept when the L+R+START menu
-  -- is open.
-  love.keypressed = gameKeypressed
-  love.keyreleased = gameKeyreleased
-  love.gamepadpressed = savedGamepadpressed or (function() end)
+  if savedKeypressed then love.keypressed = savedKeypressed end
+  if savedKeyreleased then love.keyreleased = savedKeyreleased end
+  if savedGamepadpressed then love.gamepadpressed = savedGamepadpressed end
+  -- NOTE: in-game launcher menu (L+R+START) intentionally removed.
+  -- The wrapper handlers (gameKeypressed / gameUpdate) retained stale Lua
+  -- module references after returning to the launcher, preventing the GC
+  -- from reclaiming ~6 MB of game graphics and causing "not enough memory"
+  -- on the next ROM import.  Without the wrappers, the game's own handlers
+  -- stay untouched and a process restart is needed to switch ROMs.
   love.graphics._drawBottom = nil
-  -- Install the update wrapper that pauses the game when the menu is open.
-  love.update = gameUpdate
 end
 
 -- ----- booting state ---------------------------------------------------------
@@ -498,8 +502,15 @@ local function onStart()
     return
   end
   if not sel.data then
-    setNotice("ROM has no data: " .. sel.name)
-    return
+    -- The launcher freed this ROM's bytes when the previous game booted
+    -- (boot() nils every rom.data to free heap).  Returning to the launcher
+    -- does not restore them, so re-read from the SD card now rather than
+    -- failing with "ROM has no data" (#785/#887 relaunch path).
+    sel.data = love.filesystem.read("roms/" .. sel.name)
+    if not sel.data then
+      setNotice("Could not read ROM: " .. sel.name)
+      return
+    end
   end
   startImport(sel)
 end
@@ -1283,6 +1294,22 @@ exitToLauncher = function()
   -- Drop generated data modules from the require cache so Data:load()
   -- re-reads from the new version's files on the next boot.
   pcall(function() require("src.core.Data"):unloadGenerated() end)
+  -- Drop heavy game modules from require() cache so the garbage collector
+  -- can reclaim their images/canvases/quads.  Without this the next
+  -- import starts with 11+ MB of retained game graphics and runs out of
+  -- memory before finishing stage 4.
+  for _, mod in ipairs{
+    "src.render.Renderer", "src.render.TileRenderer", "src.render.Font",
+    "src.render.DrawSink", "src.render.PaletteFX", "src.render.Transition",
+    "src.world.OverworldController", "src.world.SpriteRenderer",
+    "src.battle.BattleState", "src.battle.DrawHUDs", "src.battle.DrawPics",
+    "src.battle.DrawAnim", "src.battle.DrawText", "src.battle.DrawOther",
+    "src.core.Game", "src.core.SaveData", "src.core.ChipAudio",
+    "src.core.Input", "src.core.FixedStep", "src.core.StateStack",
+    "src.ui.Screens", "src.ui.Theme",
+  } do
+    package.loaded[mod] = nil
+  end
   -- Drop the old Game so its (megabyte-scale) data becomes garbage.
   _G.Game = nil
   collectgarbage("collect")

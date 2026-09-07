@@ -35,6 +35,25 @@ local WideBattle = require("src.battle.WideBattle")
 
 local romText = RomText
 
+-- Stereoscopic 3D: per-layer parallax (game px at full 3D slider, scaled
+-- by the C++ per-eye render exactly like the overworld's layers).  The
+-- classic battle's white paper recedes, the Pokémon pics sit near the
+-- screen, and the HUD / animations / text box pop toward the viewer --
+-- relative depth between planes is what reads as 3D, not a uniform shift
+-- (which just looks like the screen shrank).  The flat path is what the
+-- 3DS runs (no shader -> colorMode() false); _parallax is reset to 0
+-- after the sections so nothing drawn later inherits a stale depth.
+-- MUST be declared before every draw function below (drawPicsLayer,
+-- drawHUDs, _drawHUDs, drawClassic) -- a `local` is only visible from
+-- its declaration downward, so declaring these further down made the
+-- earlier functions resolve them as nil globals, which crashed the
+-- C++ _parallax __newindex metamethod on battle entry.
+local P_PAPER  = -0.5  -- white paper / arena (deepest)
+local P_ENEMY  = -0.2  -- enemy mon + its HP/status box
+local P_PLAYER =  0.2  -- my mon + its HP/status box
+local P_ANIM   =  0.4  -- attack / status animations
+local P_MENU   =  0.7  -- action menu / dialogue box (closest)
+
 local BattleState = {}
 BattleState.__index = BattleState
 BattleState.isOpaque = true
@@ -1126,9 +1145,18 @@ function BattleState:updateQueue()
   -- actually stopped sounding, which is how the original gives a sound its
   -- own clear window instead of letting the next beat play over it
   if self.waitingSound then
+    -- Safety timeout: if the sound source still reports isPlaying() after
+    -- 4 seconds (240 frames @ 60 fps) the battle queue must not block
+    -- forever -- this can happen when ndspInit fails on the 3DS and
+    -- Source:isPlaying is stuck.
+    self._waitSoundFrames = (self._waitSoundFrames or 0) + 1
     local src = self.waitingSound
-    if src and src.isPlaying and src:isPlaying() then return true end
+    if src and src.isPlaying and pcall(src.isPlaying, src) and src:isPlaying()
+       and self._waitSoundFrames < 240 then
+      return true
+    end
     self.waitingSound = nil
+    self._waitSoundFrames = nil
   end
   -- an HP-bar drain holds the queue until the bar catches up
   if self.draining then
@@ -1185,6 +1213,7 @@ function BattleState:updateQueue()
       -- the source is fetched now, not when the row was queued, so the
       -- act() that started the sound has already run
       self.waitingSound = item.waitSound()
+      self._waitSoundFrames = nil
       return true
     end
     if item.mimicSelect then
@@ -1740,6 +1769,24 @@ function BattleState:exit()
   if self.animPlayer and self.animPlayer.release then
     self.animPlayer:release()
   end
+  -- Clear HUD cache to prevent GC crash: cached SpriteBatches hold raw C
+  -- pointers to Images. During exitToLauncher's full GC, these are
+  -- finalized after Images are freed, causing use-after-free.  Must clear
+  -- now so Lua refs drop and C-side cleanup runs before forced GC.
+  if self._hudCache then
+    local DrawSink = require("src.render.DrawSink")
+    if self._hudCache.sinkE then DrawSink.clearSink(self._hudCache.sinkE) end
+    if self._hudCache.sinkP then DrawSink.clearSink(self._hudCache.sinkP) end
+    self._hudCache = nil
+  end
+  if self._textSink then
+    require("src.render.DrawSink").clearSink(self._textSink)
+    self._textSink = nil
+  end
+  -- Clear Font boxBatchCache to prevent GC crash: cached SpriteBatches hold
+  -- raw C pointers to Images. During exitToLauncher's full GC, these are
+  -- finalized after Images are freed, causing use-after-free.
+  require("src.render.Font").clearBoxBatchCache()
 end
 
 -- End a trapping sequence (USING_TRAPPING_MOVE).  SendOutMon clears the
@@ -5600,11 +5647,14 @@ function BattleState:drawHUDs(slide)
       DrawSink.drawSink(c.sinkP)
       return
     end
-    local sinkE = DrawSink.newSink()
+    -- Reuse existing sinks to avoid GPU memory allocation on each rebuild
+    local sinkE = c.sinkE or DrawSink.newSink()
+    DrawSink.clearSink(sinkE)
     DrawSink.setSink(sinkE)
     self:_drawHUDs(slide, "enemy")
     DrawSink.setSink(nil)
-    local sinkP = DrawSink.newSink()
+    local sinkP = c.sinkP or DrawSink.newSink()
+    DrawSink.clearSink(sinkP)
     DrawSink.setSink(sinkP)
     self:_drawHUDs(slide, "player")
     DrawSink.setSink(nil)
@@ -5896,6 +5946,7 @@ end
 
 function BattleState:draw()
   _dbg_bt_path = "battle"
+  if DrawProf then DrawProf.setState("battle") end
   if self:wideLayout() then return WideBattle.draw(self) end
   return self:drawClassic()
 end
@@ -5908,11 +5959,6 @@ end
 -- (which just looks like the screen shrank).  The flat path below is what
 -- the 3DS runs (no shader -> colorMode() false); _parallax is reset to 0
 -- after the sections so nothing drawn later inherits a stale depth.
-local P_PAPER  = -0.5  -- white paper / arena (deepest)
-local P_ENEMY  = -0.2  -- enemy mon + its HP/status box
-local P_PLAYER =  0.2  -- my mon + my HP/status box
-local P_ANIM   =  0.4  -- attack / status animations
-local P_MENU   =  0.7  -- action menu / dialogue box (closest)
 
 function BattleState:drawClassic()
   _dbg_bt_path = "classic"

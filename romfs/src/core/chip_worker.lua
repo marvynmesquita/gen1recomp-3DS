@@ -61,7 +61,14 @@ local function handle(cmd)
     if ok then
       engine = eng
     else
-      outCh:push("{ gen=" .. gen .. ", error=" .. string.format("%q", tostring(eng)) .. " }")
+      local emsg = tostring(eng)
+      local etb = debug.traceback(emsg, 2) or "no traceback"
+      -- a failed push must never kill the thread (the main side will just log
+      -- it); pcall the formatter so OOM inside string.format can't take the
+      -- worker down and leave the game permanently silent.
+      pcall(outCh.push, outCh, "{ gen=" .. tostring(gen) .. ", error="
+        .. string.format("%q", tostring(emsg)) .. ", traceback="
+        .. string.format("%q", tostring(etb)) .. " }")
       finished = true
     end
   elseif cmd.cmd == "stop" then
@@ -88,7 +95,17 @@ while true do
   while cmdStr do
     local f = loadstring("return " .. cmdStr)
     if f then
-      if handle(f()) then quit = true end
+      local okH, hres = pcall(handle, f())
+      if okH then
+        if hres then quit = true end
+      else
+        pcall(outCh.push, outCh, "{ gen=" .. tostring(gen)
+          .. ", error=" .. string.format("%q",
+            "worker handle error: " .. tostring(hres)) .. " }")
+        -- a malformed command is fatal to this song: stop the engine so we
+        -- don't spin on it forever
+        finished = true
+      end
     end
     cmdStr = cmdCh:pop()
   end
@@ -98,7 +115,11 @@ while true do
     local activeGen = gen
     local ok, sd = pcall(ChipSynth.soundData, engine, BUF, 2)
     if not ok then
-      outCh:push("{ gen=" .. activeGen .. ", error=" .. string.format("%q", tostring(sd)) .. " }")
+      local msg = tostring(sd)
+      local tb = debug.traceback(msg, 2) or "no traceback"
+        pcall(outCh.push, outCh, "{ gen=" .. tostring(activeGen)
+          .. ", error=" .. string.format("%q", tostring(msg))
+          .. ", traceback=" .. string.format("%q", tostring(tb)) .. " }")
       finished = true
     else
       outCh:push("{ gen=" .. activeGen .. ", sd=true }")

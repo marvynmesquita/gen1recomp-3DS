@@ -1098,6 +1098,15 @@ end
 -- boundaries between render chunks.
 local function soundDataC(engine, samples, channels)
   local result = love.sound.newSoundData(samples, SAMPLE_RATE, 16, channels)
+  -- If the malloc'd PCM buffer failed (heap exhausted), newSoundData returns
+  -- a userdata with a NULL backing buffer.  Rendering into it would either
+  -- silently produce an empty buffer or hard-crash in l_synth_render.  Raise a
+  -- clean Lua error so the worker's pcall turns it into a visible
+  -- { error = ... } hand-off instead of an endless stream of empty buffers.
+  if result and not result:getDataValid() then
+    error("soundDataC: PCM allocation failed (" .. tostring(samples)
+      .. " samples)", 0)
+  end
   local rendered = 0
   while rendered < samples do
     engine:advanceBoundaries()

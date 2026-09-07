@@ -157,6 +157,27 @@ static void reset_noise(ChanState* ch) {
     ch->noiseClock = 0;
 }
 
+// Safe indexed access into the per-hardware-channel volume/pitch tables.
+// On the 3DS a malformed/corrupt event can hand the C core an out-of-range
+// hw (e.g. 0 from a Lua-side "attempt to index a number value" glitch that
+// leaves the channel state half-written), which would otherwise underflow
+// s->vol[hw-1] / s->pitch[hw-1] off the front of the array and corrupt
+// adjacent memory before hard-crashing in render/noise_sample.  Clamp to
+// [1,4] so we always read a valid entry; gamma is the fallback gain/pitch.
+static float syn_gain(Synth* s, ChanState* ch) {
+    int hw = ch->hw;
+    if (hw < 1) hw = 1;
+    if (hw > 4) hw = 4;
+    return s->vol[hw - 1];
+}
+
+static float syn_pitch(Synth* s, ChanState* ch) {
+    int hw = ch->hw;
+    if (hw < 1) hw = 1;
+    if (hw > 4) hw = 4;
+    return s->pitch[hw - 1];
+}
+
 static void clock_noise(ChanState* ch, int width7) {
     unsigned int fb = ((ch->noiseLfsr & 1) ^ ((ch->noiseLfsr >> 1) & 1));
     ch->noiseLfsr = (ch->noiseLfsr >> 1) | (fb << 14);
@@ -216,7 +237,7 @@ static float noise_sample(Synth* s, ChanState* ch, int parameter) {
     float divisor = NOISE_DIVISORS[parameter & 7];
     int shift = (parameter >> 4) & 0xF;
     if (shift < 14) {
-        float pitch = s->pitch[ch->hw - 1];
+        float pitch = syn_pitch(s, ch);
         float cycles = (float)GB_CLOCK / divisor
             / powf(2.0f, (float)shift) / (float)s->rate * pitch;
         int width7 = (parameter & 8) != 0;
@@ -303,7 +324,7 @@ static void render_channel(lua_State* L, Synth* s, int ci, int stereo,
     ChanState* ch = &s->channels[ci];
     if (ch->ended) {
         if (ch->hasTail) {
-            float gain = s->vol[ch->hw - 1];
+            float gain = syn_gain(s, ch);
             float v = render_drum(L, s, ch, &ch->tail, ch->tailSample) * gain;
             ch->tailSample++;
             if (ch->tailSample >= ch->tailEnd) ch->hasTail = 0;
@@ -319,7 +340,7 @@ static void render_channel(lua_State* L, Synth* s, int ci, int stereo,
 
     if (ch->silence) {
         if (ch->hasTail) {
-            float gain = s->vol[ch->hw - 1];
+            float gain = syn_gain(s, ch);
             float v = render_drum(L, s, ch, &ch->tail, ch->tailSample) * gain;
             ch->tailSample++;
             if (ch->tailSample >= ch->tailEnd) ch->hasTail = 0;
@@ -329,13 +350,13 @@ static void render_channel(lua_State* L, Synth* s, int ci, int stereo,
         return;
     }
     if (ch->drum) {
-        float gain = s->vol[ch->hw - 1];
+        float gain = syn_gain(s, ch);
         float v = render_drum(L, s, ch, &ch->cur, sampleIndex) * gain;
         apply_pan(ch, stereo, v, mixL, mixR);
         return;
     }
     ch->hasTail = 0;
-    float gain = s->vol[ch->hw - 1];
+    float gain = syn_gain(s, ch);
     float volume = envelope(ch->volume, ch->fade, elapsed);
     if (ch->noise) {
         float v = noise_sample(s, ch, ch->noiseParameter) * volume / 15.0f * gain;
@@ -367,7 +388,7 @@ static void render_channel(lua_State* L, Synth* s, int ci, int stereo,
         }
     }
     if (reg > 2047) reg = 2047;
-    float pitch = s->pitch[ch->hw - 1];
+    float pitch = syn_pitch(s, ch);
     float frequency = 131072.0f / (2048.0f - reg) * pitch;
     if (ch->wave) frequency *= 0.5f;
     float phase = ch->phase;
@@ -377,6 +398,7 @@ static void render_channel(lua_State* L, Synth* s, int ci, int stereo,
     if (ch->wave) {
         if (!ch->waveValid) return;
         int index = (int)(phase * 32.0f);
+        if (index < 0) index = 0;
         if (index > 31) index = 31;
         float nibble = (float)ch->waveTable[index];
         out = (nibble / 15.0f) * ch->waveLevel * gain;
@@ -408,6 +430,11 @@ static float analog_out(Synth* s, int side, float input) {
 static int l_synth_render(lua_State* L) {
     Synth* s = (Synth*)luaL_checkudata(L, 1, "Synth");
     struct SoundData* sd = (struct SoundData*)luaL_checkudata(L, 2, "SoundData");
+    // Guard: if channels array was freed (GC) or synth is corrupt, return 0
+    if (!s || !s->channels || s->nch <= 0) {
+        lua_pushinteger(L, 0);
+        return 1;
+    }
     int offset = (int)luaL_checkinteger(L, 3);
     int count = (int)luaL_checkinteger(L, 4);
     int stereo = lua_toboolean(L, 5);
@@ -417,6 +444,18 @@ static int l_synth_render(lua_State* L) {
     if (count <= 0) {
         lua_pushinteger(L, 0);
         return 1;
+    }
+    // Guard: a SoundData whose backing buffer has been freed (e.g. another
+    // thread called love.sound.freeSoundData while the worker still owns it)
+    // has a NULL data pointer.  Rendering would hard-crash on the first PCM
+    // write, so raise a Lua error instead: the worker's pcall turns it into a
+    // clean { error = ... } hand-off.  Returning 0 here would make soundDataC
+    // silently produce endless EMPTY buffers (count<=0 -> break -> return the
+    // zero-filled SoundData anyway), flooding the main-thread Lua heap with
+    // never-freed userdata until LUA_ERRMEM kills the whole game.
+    if (!sd->data) {
+        return luaL_error(L, "SoundData has no PCM buffer (malloc failed or "
+                              "already freed)");
     }
     s16* out = sd->data;
     int nch = sd->channels;

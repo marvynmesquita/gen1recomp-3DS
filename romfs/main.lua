@@ -265,6 +265,16 @@ local function bootGame(version)
     local fn = assert(loadfile(driverPath))()
     driverCo = coroutine.create(fn)
   end
+
+  -- Native 3DS optimization: The heavy ROM parsing and startup memory
+  -- allocation have finished. We now STOP the automatic Lua garbage collector.
+  -- The automatic sweep phase takes ~200ms on the 3DS CPU, causing immense
+  -- frame stutters. From here on, `collectgarbage("collect")` is called
+  -- manually by the engine during map transitions and screen fades.
+  if love.system and love.system.getOS and love.system.getOS() == "3DS" then
+    collectgarbage("stop")
+  end
+
   -- After the two above are known: a scripted run drives the multiplier
   -- from love.update's loop, so the in-engine one must stay at 1 or the
   -- two would compound (10x10 = 100 steps per observation).

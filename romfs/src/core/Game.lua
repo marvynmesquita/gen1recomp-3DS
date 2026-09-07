@@ -57,17 +57,21 @@ function Game:load()
   -- reach them. Loading here means a type reads the same whoever asks first.
   require("src.battle.TypeChart").load(Data)
 
-  -- Tune GC for 3DS: reduce collection pressure during gameplay.
-  -- collectgarbage("setpause", 200) leaves ~100ms between major collections,
-  -- and collectgarbage("setstepmul", 200) slows per-frame incremental steps.
-  -- This lowers frame spikes when audio/animation assets are queueing.
-  if collectgarbage then
-    collectgarbage("setpause", 200)
-    collectgarbage("setstepmul", 200)
-  end
+    if collectgarbage then
+      if love.system.getOS() == "3DS" then
+        -- Native 3DS: Disable automatic incremental GC completely to prevent the
+        -- GCSatomic phase from causing >100ms stutter frames during gameplay.
+        -- We rely purely on Transition.lua's full `collect` during screen fades!
+        collectgarbage("stop")
+      else
+        -- Tune GC for Desktop/Mobile:
+        collectgarbage("setpause", 200)
+        collectgarbage("setstepmul", 200)
+      end
+    end
 
-  self.input = Input
-  Input:init()
+    self.input = Input
+    Input:init()
 
   self.touchControls = TouchControls
   TouchControls:init()
@@ -327,7 +331,14 @@ function Game:update(dt)
   -- only has to keep ordinary Lua-heap garbage (per-frame tables/closures)
   -- from drifting upward over a long session, and to spread collection out
   -- so the default lazy schedule never batches it into a visible pause.
-  if collectgarbage then collectgarbage("step", 2) end
+  --
+  -- Native 3DS: Stepping the GC here will still hit the GCSatomic phase
+  -- eventually, causing massive >100ms stutter frames! We leave it completely
+  -- disabled on the 3DS during gameplay and rely on Transition.lua's full
+  -- `collect` during screen fades, where the lag is hidden.
+  if love.system.getOS() ~= "3DS" then
+    if collectgarbage then collectgarbage("step", 2) end
+  end
   if DrawProf then DrawProf.finish("upd_total") end
 end
 

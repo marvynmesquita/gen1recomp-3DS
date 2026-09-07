@@ -48,6 +48,12 @@ static int l_sounddata_setSample(lua_State* L) {
 
 static int l_sounddata_getSample(lua_State* L) {
     SoundData* sd = (SoundData*)luaL_checkudata(L, 1, "SoundData");
+    if (!sd->data) {
+        // Backing PCM buffer was freed or never allocated; reading a sample
+        // from it would dereference NULL.  Report silence.
+        lua_pushnumber(L, 0.0f);
+        return 1;
+    }
     int index = luaL_checkinteger(L, 2);
     int channel = luaL_checkinteger(L, 3);
 
@@ -79,12 +85,19 @@ static int l_sounddata_getSampleRate(lua_State* L) {
     return 1;
 }
 
+static int l_sounddata_getDataValid(lua_State* L) {
+    SoundData* sd = (SoundData*)luaL_checkudata(L, 1, "SoundData");
+    lua_pushboolean(L, sd->data != NULL);
+    return 1;
+}
+
 static const luaL_Reg sounddata_methods[] = {
     {"setSample", l_sounddata_setSample},
     {"getSample", l_sounddata_getSample},
     {"getSampleCount", l_sounddata_getSampleCount},
     {"getChannelCount", l_sounddata_getChannelCount},
     {"getSampleRate", l_sounddata_getSampleRate},
+    {"getDataValid", l_sounddata_getDataValid},
     {"__gc", l_sounddata_gc},
     {NULL, NULL}
 };
@@ -110,8 +123,22 @@ static int l_sound_newSoundData(lua_State* L) {
     return 1;
 }
 
+// Explicitly release the PCM buffer of a SoundData.  On the 3DS the Lua GC is
+// stopped during gameplay, so any SoundData whose buffer is no longer needed
+// (e.g. stale music buffers dropped by the streaming thread) must be freed
+// deterministically to keep the heap from growing unbounded.
+static int l_sound_freeSoundData(lua_State* L) {
+    SoundData* sd = (SoundData*)luaL_checkudata(L, 1, "SoundData");
+    if (sd->data) {
+        free(sd->data);
+        sd->data = NULL;
+    }
+    return 0;
+}
+
 static const luaL_Reg sound_funcs[] = {
     {"newSoundData", l_sound_newSoundData},
+    {"freeSoundData", l_sound_freeSoundData},
     {NULL, NULL}
 };
 

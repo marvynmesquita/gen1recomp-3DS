@@ -803,18 +803,28 @@ function TileRenderer:ensureWindow(camX, camY, vw, vh)
   end
   local map, quads = self.map, self.quads
   local claimedBy, aliasMap = self.claimedBy, self.aliasMap
+  local def = map.def
+  local width, height = def.width, def.height
+  local blocks = def.blocks
+  local borderBlock = def.borderBlock
+  local tilesetBlocks = map.tileset.blocks
+
   for ty = ty0, ty1 - 1 do
     local by = math.floor(ty / 4)
     local ty4 = ty % 4
+    local wy = ty * 8
+    local ty4_offset = ty4 * 4
     for tx = tx0, tx1 - 1 do
-      local blockId = map:blockAt(math.floor(tx / 4), by)
-      local block = map.tileset.blocks[blockId + 1]
+      local bx = math.floor(tx / 4)
+      local blockId = (bx < 0 or by < 0 or bx >= width or by >= height)
+                      and borderBlock or blocks[by * width + bx + 1]
+      local block = tilesetBlocks[blockId + 1]
       if block then
-        local ci = ty4 * 4 + (tx % 4)
+        local ci = ty4_offset + (tx % 4)
         local tile = block[ci + 1]
         local remap = aliasMap and aliasMap[blockId]
         if remap and remap[ci] then tile = remap[ci] end
-        local wx, wy = tx * 8, ty * 8
+        local wx = tx * 8
         local anim = claimedBy[tile]
         -- An always-animating tile (flowers, water) is fully overdrawed by
         -- its anim batch every frame, so ALSO baking it into the static

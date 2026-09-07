@@ -1,5 +1,6 @@
 # ── Build artifacts ──
 *.3dsx
+*.cia
 *.elf
 *.smdh
 *.cias
@@ -48,6 +49,23 @@ test_z.cpp
 # ── Reference repos (cloned separately, not vendored) ──
 gen1recomp-dev/
 love_package/
+
+# ── Build tools (platform-specific, not vendored) ──
+tools/
+
+# ── ExeFS / temporary build data ──
+exefs_logo.bin
+
+# ── Banner intermediate files ──
+assets/banner_transparent.png
+assets/logo/
+scripts/obj_to_banner_gltf.py
+scripts/wav_to_cwav_adpcm.py
+
+# ── SD card / local test data ──
+/Volumes/
+SD_CARD/
+sdcard/
 lovepotion_dist/
 lovepotion_src/
 LovePotion/

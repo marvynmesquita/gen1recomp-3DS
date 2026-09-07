@@ -96,6 +96,10 @@ function Transition:update(dt)
     self.t = 0
     if self.phase == "out" then
       self.phase = "in"
+      -- The screen is currently fully black/faded out. This is the optimal
+      -- time to run the heavy 3DS garbage collection (which takes ~200ms)
+      -- because the game is stopped and the freeze is invisible to the user.
+      collectgarbage("collect")
       if self.onMidpoint then self.onMidpoint() end
       -- LoadGBPal restores the palettes in one write, so with no fade in the
       -- map is simply there on the next frame

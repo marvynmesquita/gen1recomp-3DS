@@ -73,7 +73,6 @@ local function pagesOf(def)
   return pages
 end
 
--- ttf.tiles as a lookup keyed by charmap sequence.  Accepts a plain string
 -- ("0123456789"), which is split into UTF-8 characters, or a list of
 -- sequences ({ "0", "1", "<PK>" }) when a multi-character macro is meant.
 local function tileSet(spec)
@@ -451,9 +450,21 @@ function Font.drawCode(code, x, y)
   if ttf and code >= TTF_BASE then
     local prev = love.graphics.getFont()
     love.graphics.setFont(ttf.font)
+    -- TTF path: cache character glyph and width to avoid repeated font:getWidth calls
     local ch = ttfChar(ttf, code)
-    love.graphics.print(ch, x, y + ttf.yOffset)
-    if ttf.bold then love.graphics.print(ch, x + 1, y + ttf.yOffset) end
+    if ttf._charCache == nil then ttf._charCache = {}; ttf._charCacheN = 0 end
+    local cached = ttf._charCache[code]
+    if not cached then
+      if ttf._charCacheN >= 512 then
+        ttf._charCache = {}; ttf._charCacheN = 0
+      end
+      cached = {ch = ch, w = ttf.font:getWidth(ch) + ttf.spacing + (ttf.bold and 1 or 0)}
+      ttf._charCache[code] = cached
+      ttf._charCacheN = ttf._charCacheN + 1
+      ttf.widths[code] = cached.w
+    end
+    love.graphics.print(cached.ch, x, y + ttf.yOffset)
+    if ttf.bold then love.graphics.print(cached.ch, x + 1, y + ttf.yOffset) end
     if prev then love.graphics.setFont(prev) end
     return
   end
@@ -499,9 +510,35 @@ function Font.width(text)
   return w
 end
 
+-- Reusable buffer for Font.draw fast path to avoid per-frame table allocation.
+local _drawBuf = {}
 -- Draw a plain single-line string at pixel (x, y).  Returns the width
 -- drawn, which is #codes * 8 for every fixed-width page.
 function Font.draw(text, x, y)
+  local ttf = state and state.ttf
+  if ttf then
+    local codes = Font.encode(text)
+    local n = #codes
+    if n > 0 then
+      local allTTF = true
+      for i = 1, n do
+        if codes[i] < TTF_BASE then allTTF = false; break end
+      end
+      if allTTF then
+        for i = 1, n do _drawBuf[i] = ttfChar(ttf, codes[i]) end
+        local s = table.concat(_drawBuf, "", 1, n)
+        for i = 1, n do _drawBuf[i] = nil end
+        local prev = love.graphics.getFont()
+        love.graphics.setFont(ttf.font)
+        love.graphics.print(s, x, y + ttf.yOffset)
+        if ttf.bold then love.graphics.print(s, x + 1, y + ttf.yOffset) end
+        if prev then love.graphics.setFont(prev) end
+        local w = 0
+        for i = 1, n do w = w + Font.advanceOf(codes[i]) end
+        return w
+      end
+    end
+  end
   local codes = Font.encode(text)
   local pen = x
   for _, code in ipairs(codes) do
@@ -524,6 +561,7 @@ for key, code in pairs(Font.DEFAULT_BORDER) do Font.BORDER[key] = code end
 -- Draw a Game Boy style bordered box in tile coordinates.
 --
 -- `fill` is an optional {r,g,b} in 0..255 for the interior.  White is the
+-- right answer everywhere in Gen 1 and on nearly every Gold screen, because
 -- right answer everywhere in Gen 1 and on nearly every Gold screen, because
 -- the box is drawn from font-page tiles ($79-$7e plus the ' ' $7f interior,
 -- all >= $60) and those take BG palette 0, whose colour 0 is white there.  A
@@ -631,6 +669,19 @@ function Font.drawBoxBatched(tx, ty, tw, th, fill)
     love.graphics.draw(batch, 0, 0)
   else
     drawBorder(tx, ty, tw, th, B)
+  end
+end
+
+-- Clear the boxBatchCache to prevent GC crash: cached SpriteBatches hold raw C
+-- pointers to Images. During exitToLauncher's full GC, these are finalized
+-- after Images are freed, causing use-after-free. Must clear now so Lua refs
+-- drop and C-side cleanup runs before forced GC.
+function Font.clearBoxBatchCache()
+  for key, batch in pairs(boxBatchCache) do
+    if batch and batch ~= false and batch.clear then
+      batch:clear()
+    end
+    boxBatchCache[key] = nil
   end
 end
 

@@ -23,10 +23,9 @@ end
 
 -- Flush cadence.  The flush is an SD create/write/close that runs inside the
 -- timed love.draw window; on slow/aging cards a single write can stall 100ms+
--- and show up as a fake luaDraw spike.  Every 60 frames = a fresh sample every
--- ~2s but heavy SD pressure; 180 keeps ~6s samples (3s if we ever hit 60fps)
--- while cutting write pressure (and stutter chance) 3x.
-local FLUSH_EVERY = 180
+-- and show up as a fake luaDraw spike.  60 frames = ~1s sample on 3DS hardware
+-- while keeping SD pressure manageable.
+local FLUSH_EVERY = 60
 
 -- "_ow_"..phase global keys, cached so the per-frame publish allocates no
 -- strings (GC churn inside the timed draw window is exactly what we profile).
@@ -41,16 +40,23 @@ local acc      -- phase -> accumulated ms this window
 local peaks    -- phase -> max single-frame ms this window
 local frameMs  -- phase -> this frame's ms (reset each frame)
 local count
-local lastFlushMs
+local frameCountSinceFlush = 0
+local minFrameTime = 9999 -- for FPS calculation
 
 local function reset()
   acc = {}
   peaks = {}
   frameMs = {}
   count = 0
-  lastFlushMs = 0
 end
 reset()
+
+-- Track current state for context-aware profiling
+local currentStateName = "unknown"
+M.setState = function(name) 
+  currentStateName = name 
+  _G._ow_state = name -- publish for C++ slow-frame log
+end
 
 M.begin = function(phase)
   local t = now() * 1000
@@ -68,18 +74,39 @@ M.finish = function(phase)
   _G[gkey(phase)] = f
 end
 
+-- Track frame time for FPS
+local lastFrameTime = 0
+M.markFrame = function()
+  local t = now() * 1000
+  local frameTime = t - lastFrameTime
+  lastFrameTime = t
+  if frameTime < minFrameTime then minFrameTime = frameTime end
+  -- publish instantaneous frame time for C++ slow-frame line
+  _G._ow_frameTime = frameTime
+end
+
 -- Mark the end of a rendered frame; flush averages+peaks every `every` frames
 -- (default FLUSH_EVERY, see above).  Safe to call from a state's draw() so
 -- only that state's frames are counted (no dilution from other states' frames).
 M.frame = function(every)
   every = every or FLUSH_EVERY
   count = count + 1
+  frameCountSinceFlush = frameCountSinceFlush + 1
   frameMs = {}
   if count % every ~= 0 then return end
-  local lines = { string.format("frames=%d (avg ms/frame, peak ms)", count) }
+  local lines = { 
+    string.format("frames=%d (avg ms/frame, peak ms, state=%s)", count, currentStateName)
+  }
   for k, v in pairs(acc) do
     lines[#lines + 1] = string.format("%s: avg=%.2f peak=%.2f",
                                       k, v / count, peaks[k] or 0)
+  end
+  table.sort(lines)
+  -- Add FPS info
+  if minFrameTime < 9999 then
+    local avgFPS = 1000 / minFrameTime
+    lines[#lines + 1] = string.format("minFrameTime=%.2fms (maxFPS=%.1f)", minFrameTime, avgFPS)
+    minFrameTime = 9999
   end
   table.sort(lines)
   local ok, f = pcall(io.open, "drawprof.txt", "w")
@@ -90,7 +117,13 @@ M.frame = function(every)
     end)
     if not wrote then pcall(function() f:close() end) end
   end
-  reset()
+  local function resetAcc()
+    acc = {}
+    peaks = {}
+    frameMs = {}
+    count = 0
+  end
+  resetAcc()
 end
 
 return M

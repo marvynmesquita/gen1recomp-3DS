@@ -38,11 +38,23 @@ static float g_currentZ = 0.0f;
 // 0 when the 3D slider is down), and g_parallaxLayer is the per-layer
 // game-pixel parallax the Lua draw publishes via love.graphics._parallax
 // (tiles recess, sprites pop, UI/borders sit at the screen plane).  Every
-// image/batch/rect draw adds g_eyeParallax * g_parallaxLayer to its X so the
-// two eye views diverge and the barrier fuses them into depth.  At slider 0
-// the offset is 0 for both eyes and the frame renders exactly as before.
+// image/batch/rect draw adds g_eyeParallax * g_parallaxLayer * PARALLAX_GAIN
+// to its X so the two eye views diverge and the barrier fuses them into depth.
+// At slider 0 the offset is 0 for both eyes and the frame renders as before.
 float g_eyeParallax = 0.0f;
-static float g_parallaxLayer = 0.0f;
+float g_parallaxLayer = 0.0f;
+
+// Amplifies the per-layer game-pixel parallax into a clearly visible on-screen
+// separation.  The Lua layers publish small values (tiles -0.3, sprites 0.55,
+// menu 0.7) which, after the 2.5x scale, only give 0.75-1.75 screen px per
+// eye -- far too little for the parallax barrier to fuse into depth.  Real
+// 3DS titles separate the closest layers by 10-20+ screen px.  Multiplying
+// by PARALLAX_GAIN turns the published values into:
+//   tiles:  -0.3 * 3 * 2.5 = -2.25 screen px (recessed)
+//   sprites: 0.55 * 3 * 2.5 = +4.1  screen px (pop)
+//   menu:    0.7 * 3 * 2.5 = +5.25 screen px (closest)
+// which is a comfortable depth curve at full slider.
+#define PARALLAX_GAIN (1.8f)
 
 // Per-frame draw diagnostics (reset by the main loop each frame).  These tell
 // us how many C2D_DrawImageAt calls a frame issues and how long the SpriteBatch
@@ -89,27 +101,89 @@ static int l_graphics_getColor(lua_State* L) {
     return 4;
 }
 
-static void get_screen_scales(lua_State* L, float& gScaleX, float& gScaleY) {
-    gScaleX = 1.0f;
-    gScaleY = 1.0f;
-    g_parallaxLayer = 0.0f;
-    lua_getglobal(L, "love");
-    if (lua_istable(L, -1)) {
-        lua_getfield(L, -1, "graphics");
-        if (lua_istable(L, -1)) {
-            lua_getfield(L, -1, "_scaleX");
-            if (lua_isnumber(L, -1)) gScaleX = (float)lua_tonumber(L, -1);
-            lua_pop(L, 1);
-            lua_getfield(L, -1, "_scaleY");
-            if (lua_isnumber(L, -1)) gScaleY = (float)lua_tonumber(L, -1);
-            lua_pop(L, 1);
-            lua_getfield(L, -1, "_parallax");
-            if (lua_isnumber(L, -1)) g_parallaxLayer = (float)lua_tonumber(L, -1);
-            lua_pop(L, 1);
-        }
-        lua_pop(L, 1);
+// Scale factors stored directly in C++
+static float g_currentDrawScaleX = 1.0f;
+static float g_currentDrawScaleY = 1.0f;
+
+// Quad structure for zero-overhead C++ access
+struct Quad {
+    float x, y, w, h;
+    float sw, sh;
+};
+
+static int l_quad_getViewport(lua_State* L) {
+    Quad* q = (Quad*)lua_touserdata(L, 1);
+    if (!q) return 0;
+    lua_pushnumber(L, q->x);
+    lua_pushnumber(L, q->y);
+    lua_pushnumber(L, q->w);
+    lua_pushnumber(L, q->h);
+    return 4;
+}
+
+static int l_quad_setViewport(lua_State* L) {
+    Quad* q = (Quad*)lua_touserdata(L, 1);
+    if (!q) return 0;
+    q->x = (float)luaL_checknumber(L, 2);
+    q->y = (float)luaL_checknumber(L, 3);
+    q->w = (float)luaL_checknumber(L, 4);
+    q->h = (float)luaL_checknumber(L, 5);
+    return 0;
+}
+
+static int l_quad_typeOf(lua_State* L) {
+    const char* t = luaL_checkstring(L, 2);
+    lua_pushboolean(L, t && strcmp(t, "Quad") == 0);
+    return 1;
+}
+
+static int l_graphics_newQuad(lua_State* L) {
+    float x = (float)luaL_checknumber(L, 1);
+    float y = (float)luaL_checknumber(L, 2);
+    float w = (float)luaL_checknumber(L, 3);
+    float h = (float)luaL_checknumber(L, 4);
+    float sw = (float)luaL_optnumber(L, 5, 1.0f);
+    float sh = (float)luaL_optnumber(L, 6, 1.0f);
+    
+    Quad* q = (Quad*)lua_newuserdata(L, sizeof(Quad));
+    q->x = x; q->y = y; q->w = w; q->h = h;
+    q->sw = sw; q->sh = sh;
+    
+    if (luaL_newmetatable(L, "Quad")) {
+        lua_pushvalue(L, -1);
+        lua_setfield(L, -2, "__index");
+        
+        lua_pushcfunction(L, l_quad_getViewport);
+        lua_setfield(L, -2, "getViewport");
+        lua_pushcfunction(L, l_quad_setViewport);
+        lua_setfield(L, -2, "setViewport");
+        lua_pushcfunction(L, l_quad_typeOf);
+        lua_setfield(L, -2, "typeOf");
     }
-    lua_pop(L, 1);
+    lua_setmetatable(L, -2);
+    return 1;
+}
+
+static int l_graphics_setParallax(lua_State* L) {
+    g_parallaxLayer = (float)luaL_checknumber(L, 1);
+    // Keep love.graphics._parallax in sync so get_screen_scales()'s
+    // authoritative read of the field stays correct whichever API is used.
+    lua_getglobal(L, "love");
+    lua_getfield(L, -1, "graphics");
+    lua_pushvalue(L, 1);
+    lua_setfield(L, -2, "_parallax");
+    lua_pop(L, 2);
+    return 0;
+}
+
+static void get_screen_scales(lua_State* L, float& gScaleX, float& gScaleY) {
+    (void)L;
+    gScaleX = g_currentDrawScaleX;
+    gScaleY = g_currentDrawScaleY;
+    // g_parallaxLayer is updated directly by the love.graphics._parallax
+    // __newindex metamethod at every layer switch, so there is no need to
+    // re-read it here -- doing so would add three Lua state lookups to every
+    // single draw call, which hurts the CPU-bound overworld frame budget.
 }
 
 static float g_scissorX = 0;
@@ -211,7 +285,7 @@ static int l_graphics_rectangle(lua_State* L) {
 
     u32 color = C2D_Color32((u8)(g_drawR * 255.0f), (u8)(g_drawG * 255.0f), (u8)(g_drawB * 255.0f), (u8)(g_drawA * 255.0f));
     g_currentZ += 0.00001f;
-    C2D_DrawRectSolid((x + g_eyeParallax * g_parallaxLayer) * gScaleX, y * gScaleY, g_currentZ, w * gScaleX, h * gScaleY, color);
+    C2D_DrawRectSolid((x + g_eyeParallax * g_parallaxLayer * PARALLAX_GAIN) * gScaleX, y * gScaleY, g_currentZ, w * gScaleX, h * gScaleY, color);
     return 0;
 }
 
@@ -341,11 +415,40 @@ struct SpriteBatch {
     int count;
     int capacity;
     SpriteBatchEntry* entries;
+    // Strong Lua reference to the Image this batch is bound to.  Drawing a
+    // batch dereferences sb->img->texture in C (l_graphics_draw), so if the
+    // Image userdata were collected while the batch lived on, that read would
+    // be a use-after-free that can crash on the 3DS.  Keeping a registry ref
+    // guarantees the Image is never collected before the batch, so the pair
+    // always dies together -- a real lifetime hazard the battle HUD cache
+    // (DrawSink reuse) and the exitToLauncher full-GC teardown both exercise.
+    int imgRef;     // registry ref keeping `img` alive; LUA_NOREF when none
 };
+
+// HUD batching optimization: since each SpriteBatch is bound to a single
+// texture (all entries share sb->img->texture), the per-frame batch draw
+// loop issues exactly ONE texture bind per batch regardless of entry count.
+// The remaining texture-switch cost comes from *between* batches -- e.g. the
+// battle HUD draws sinkE (font texture + tile texture) then sinkP (same two),
+// interleaving.  Sorting the batches by texture pointer before drawing
+// groups identical textures together and halves the switches.
+//
+// This is implemented on the Lua side (DrawSink.drawSink sorts by image
+// userdata pointer); the C++ side already tracks g_last_tex so consecutive
+// batches with the same texture skip the rebind cost.
+
+static int l_spritebatch_clearRef(lua_State* L, SpriteBatch* sb) {
+    if (sb->imgRef != LUA_NOREF) {
+        luaL_unref(L, LUA_REGISTRYINDEX, sb->imgRef);
+        sb->imgRef = LUA_NOREF;
+    }
+    return 0;
+}
 
 static int l_spritebatch_gc(lua_State* L) {
     SpriteBatch* sb = (SpriteBatch*)lua_touserdata(L, 1);
     if (sb) {
+        l_spritebatch_clearRef(L, sb);
         if (sb->entries) {
             free(sb->entries);
             sb->entries = nullptr;
@@ -364,7 +467,10 @@ static int l_spritebatch_setTexture(lua_State* L) {
     SpriteBatch* sb = (SpriteBatch*)lua_touserdata(L, 1);
     Image* img = (Image*)lua_touserdata(L, 2);
     if (sb && img) {
+        l_spritebatch_clearRef(L, sb);
         sb->img = img;
+        lua_pushvalue(L, 2);
+        sb->imgRef = luaL_ref(L, LUA_REGISTRYINDEX);
     }
     return 0;
 }
@@ -375,7 +481,14 @@ static int l_spritebatch_add(lua_State* L) {
     
     if (sb->count >= sb->capacity) {
         sb->capacity = (sb->capacity == 0) ? 128 : sb->capacity * 2;
-        sb->entries = (SpriteBatchEntry*)realloc(sb->entries, sb->capacity * sizeof(SpriteBatchEntry));
+        SpriteBatchEntry* new_entries = (SpriteBatchEntry*)realloc(sb->entries, sb->capacity * sizeof(SpriteBatchEntry));
+        if (!new_entries) {
+            // OOM on 3DS heap — shrink capacity back so we don't keep trying
+            sb->capacity = sb->capacity / 2;
+            if (sb->capacity == 0) sb->capacity = 1;
+            return luaL_error(L, "spritebatch: out of memory (capacity %d)", sb->capacity);
+        }
+        sb->entries = new_entries;
     }
     
     SpriteBatchEntry& e = sb->entries[sb->count++];
@@ -389,7 +502,21 @@ static int l_spritebatch_add(lua_State* L) {
     float tw = tex ? (float)tex->width : 1.0f;
     float th = tex ? (float)tex->height : 1.0f;
     
-    if (lua_istable(L, 2)) {
+    if (lua_isuserdata(L, 2)) {
+        Quad* q = (Quad*)lua_touserdata(L, 2);
+        float qx = q->x, qy = q->y, qw = q->w, qh = q->h;
+        e.x = (float)luaL_optnumber(L, 3, 0);
+        e.y = (float)luaL_optnumber(L, 4, 0);
+        e.scaleX = (float)luaL_optnumber(L, 6, 1.0f);
+        e.scaleY = (float)luaL_optnumber(L, 7, 1.0f);
+        
+        e.left   = (qx + 0.05f) / tw;
+        e.right  = (qx + qw - 0.05f) / tw;
+        e.top    = 1.0f - (qy + 0.05f) / th;
+        e.bottom = 1.0f - (qy + qh - 0.05f) / th;
+        e.sw = (u16)qw;
+        e.sh = (u16)qh;
+    } else if (lua_istable(L, 2)) {
         float qx, qy, qw, qh;
         lua_getfield(L, 2, "_x"); qx = (float)lua_tonumber(L, -1); lua_pop(L, 1);
         lua_getfield(L, 2, "_y"); qy = (float)lua_tonumber(L, -1); lua_pop(L, 1);
@@ -432,6 +559,18 @@ static int l_graphics_newSpriteBatch(lua_State* L) {
     sb->count = 0;
     sb->capacity = size;
     sb->entries = (SpriteBatchEntry*)malloc(size * sizeof(SpriteBatchEntry));
+    if (!sb->entries) {
+        return luaL_error(L, "spritebatch: out of memory (size %d)", size);
+    }
+    // Keep a Lua reference to the Image so it cannot be GC'd while this batch
+    // still dereferences sb->img->texture in draw.  This mirrors how LÖVE 0.10
+    // keeps a reference on its SpriteBatch userdata.
+    if (img) {
+        lua_pushvalue(L, 1);
+        sb->imgRef = luaL_ref(L, LUA_REGISTRYINDEX);
+    } else {
+        sb->imgRef = LUA_NOREF;
+    }
     
     if (luaL_newmetatable(L, "SpriteBatch")) {
         lua_pushvalue(L, -1);
@@ -482,12 +621,16 @@ extern "C" void graphics_setScreenTarget(C3D_RenderTarget* target) {
 extern "C" void graphics_setScreenScale(float sx, float sy) {
     g_saved_screen_scaleX = sx;
     g_saved_screen_scaleY = sy;
+    g_currentDrawScaleX = sx;
+    g_currentDrawScaleY = sy;
 }
 
 // Push _scaleX / _scaleY into love.graphics so the C++ draw path picks them
 // up via get_screen_scales().  Called by setCanvas / renderTo to switch
 // between screen-scale (2.5x/1.667x) and canvas-scale (1:1).
 static void set_lua_scale(lua_State* L, float sx, float sy) {
+    g_currentDrawScaleX = sx;
+    g_currentDrawScaleY = sy;
     lua_getglobal(L, "love");
     if (lua_istable(L, -1)) {
         lua_getfield(L, -1, "graphics");
@@ -547,7 +690,7 @@ static int l_canvas_typeOf(lua_State* L) {
     return 1;
 }
 
-static int l_canvas_release(lua_State* L) {
+static int __attribute__((unused)) l_canvas_release(lua_State* L) {
     return l_canvas_gc(L);
 }
 
@@ -593,7 +736,7 @@ static int l_canvas_renderTo(lua_State* L) {
     return 0;
 }
 
-static int l_graphics_newCanvas(lua_State* L) {
+static int __attribute__((unused)) l_graphics_newCanvas(lua_State* L) {
     int w = luaL_optinteger(L, 1, 160);
     int h = luaL_optinteger(L, 2, 144);
     if (w <= 0 || h <= 0)
@@ -656,7 +799,7 @@ static int l_graphics_newCanvas(lua_State* L) {
     return 1;
 }
 
-static int l_graphics_setCanvas(lua_State* L) {
+static int __attribute__((unused)) l_graphics_setCanvas(lua_State* L) {
     if (lua_isnoneornil(L, 1)) {
         // Switch back to screen
         if (g_canvas_active) {
@@ -706,10 +849,10 @@ static int l_graphics_draw(lua_State* L) {
     }
     
     float gScaleX = 1.0f, gScaleY = 1.0f;
-    // Also reads love.graphics._parallax into g_parallaxLayer so every image /
-    // SpriteBatch draw picks up the per-layer stereoscopic 3D offset.  (Using
-    // the shared helper here instead of the old inline _scaleX/_scaleY reads
-    // guarantees the parallax and the scales always come from the same place.)
+    // get_screen_scales returns the current screen scale.  g_parallaxLayer was
+    // already set by the love.graphics._parallax __newindex metamethod when the
+    // Lua draw switched to this layer, so every image / SpriteBatch draw picks
+    // up the correct per-layer stereoscopic 3D offset without extra lookups.
     get_screen_scales(L, gScaleX, gScaleY);
 
     if (is_batch) {
@@ -746,7 +889,7 @@ static int l_graphics_draw(lua_State* L) {
             if (e.scaleY < 0) drawY += subtex->height * e.scaleY;
             
             g_currentZ += 0.00001f;
-            C2D_DrawImageAt(c2d_img, (drawX + g_eyeParallax * g_parallaxLayer) * gScaleX, drawY * gScaleY, g_currentZ, NULL, e.scaleX * gScaleX, e.scaleY * gScaleY);
+            C2D_DrawImageAt(c2d_img, (drawX + g_eyeParallax * g_parallaxLayer * PARALLAX_GAIN) * gScaleX, drawY * gScaleY, g_currentZ, NULL, e.scaleX * gScaleX, e.scaleY * gScaleY);
         }
         u64 dbg1 = osGetTime();
         g_dbg_batch_ms += (dbg1 - dbg0);
@@ -766,7 +909,21 @@ static int l_graphics_draw(lua_State* L) {
         Tex3DS_SubTexture* subtex = &g_subtex_pool[g_subtex_count++];
         if (g_subtex_count >= MAX_SUBTEX_PER_FRAME) g_subtex_count = 0;
         
-        if (lua_istable(L, 2)) {
+        if (lua_isuserdata(L, 2)) {
+            Quad* q = (Quad*)lua_touserdata(L, 2);
+            float qx = q->x, qy = q->y, qw = q->w, qh = q->h;
+            x = luaL_optnumber(L, 3, 0);
+            y = luaL_optnumber(L, 4, 0);
+            scaleX = luaL_optnumber(L, 6, 1.0f);
+            scaleY = luaL_optnumber(L, 7, 1.0f);
+            
+            subtex->left   = (qx + 0.05f) / (float)img->texture->width;
+            subtex->right  = (qx + qw - 0.05f) / (float)img->texture->width;
+            subtex->top    = 1.0f - (qy + 0.05f) / (float)img->texture->height;
+            subtex->bottom = 1.0f - (qy + qh - 0.05f) / (float)img->texture->height;
+            subtex->width  = (u16)qw;
+            subtex->height = (u16)qh;
+        } else if (lua_istable(L, 2)) {
             x = luaL_optnumber(L, 3, 0);
             y = luaL_optnumber(L, 4, 0);
             scaleX = luaL_optnumber(L, 6, 1.0f);
@@ -805,7 +962,7 @@ static int l_graphics_draw(lua_State* L) {
         c2d_img.subtex = subtex;
         g_currentZ += 0.00001f;
         g_dbg_single_calls++;
-        C2D_DrawImageAt(c2d_img, (drawX + g_eyeParallax * g_parallaxLayer) * gScaleX, drawY * gScaleY, g_currentZ, NULL, scaleX * gScaleX, scaleY * gScaleY);
+        C2D_DrawImageAt(c2d_img, (drawX + g_eyeParallax * g_parallaxLayer * PARALLAX_GAIN) * gScaleX, drawY * gScaleY, g_currentZ, NULL, scaleX * gScaleX, scaleY * gScaleY);
     }
     g_dbg_draw_cpp_ms += osGetTime() - dbg_t0;
     return 0;
@@ -855,7 +1012,7 @@ static int l_graphics_print(lua_State* L) {
     float scale = 0.40f;
     g_currentZ += 0.00001f;
     C2D_DrawText(&t, C2D_WithColor,
-                 (x + g_eyeParallax * g_parallaxLayer) * gScaleX,
+                 (x + g_eyeParallax * g_parallaxLayer * PARALLAX_GAIN) * gScaleX,
                  y * gScaleY, g_currentZ,
                  scale * gScaleX, scale * gScaleY, color);
     return 0;
@@ -866,6 +1023,7 @@ static int l_graphics_print(lua_State* L) {
 static const luaL_Reg graphics_funcs[] = {
     {"newImage", l_graphics_newImage},
     {"newSpriteBatch", l_graphics_newSpriteBatch},
+    {"newQuad", l_graphics_newQuad},
     {"draw", l_graphics_draw},
     {"setColor", l_graphics_setColor},
     {"getColor", l_graphics_getColor},
@@ -874,11 +1032,33 @@ static const luaL_Reg graphics_funcs[] = {
     {"setScissor", l_graphics_setScissor},
     {"setScissorFlush", l_graphics_setScissorFlush},
     {"intersectScissor", l_graphics_intersectScissor},
+    {"setParallax", l_graphics_setParallax},
     {"_printC", l_graphics_print},
     {NULL, NULL}
 };
 
 extern "C" int luaopen_love_graphics(lua_State* L) {
     luaL_register(L, "love.graphics", graphics_funcs);
+    
+    // Intercept love.graphics._parallax = val
+    lua_getglobal(L, "love");
+    lua_getfield(L, -1, "graphics");
+    lua_newtable(L);
+    lua_pushcfunction(L, [](lua_State* L) -> int {
+        const char* key = luaL_checkstring(L, 2);
+        if (strcmp(key, "_parallax") == 0) {
+            g_parallaxLayer = (float)luaL_checknumber(L, 3);
+            // DO NOT rawset this key into the table. If it enters the table,
+            // __newindex will stop firing for future assignments and the
+            // parallax layer will become stuck. It is never read by Lua anyway.
+            return 0;
+        }
+        // Other keys (e.g. _eye, _scaleX, _scaleY, _3dSlider)
+        lua_rawset(L, 1);
+        return 0;
+    });
+    lua_setfield(L, -2, "__newindex");
+    lua_setmetatable(L, -2);
+    lua_pop(L, 2);
     return 1;
 }

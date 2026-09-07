@@ -253,10 +253,11 @@ end
 local function updateThreaded()
   local m = currentMusic
   if not m then return end
-  if not workerAlive() then
-    -- worker gone: nothing more will arrive; leave whatever is queued playing
-    return
-  end
+  -- Periodic incremental GC step to clean up accumulated SoundData userdata
+  -- (100+ bytes each) that accumulate in the stopped-GC main thread heap.
+  -- Small step count avoids triggering the atomic GC phase that causes stutter.
+  if collectgarbage then collectgarbage("step", 4) end
+
   while true do
     local free = m.source:getFreeBufferCount()
     local buf = pendingBuf
@@ -276,11 +277,20 @@ local function updateThreaded()
       end
     end
     if buf.gen ~= m.gen then
-      -- stale buffer from a superseded song: drop it
+      -- Stale buffer from a superseded song: drop it.  We must NOT call
+      -- love.sound.freeSoundData here: the worker thread shares the same
+      -- SoundData userdata over the channel, so freeing the backing `data`
+      -- while the worker can still render into it is a use-after-free that
+      -- hard-crashes l_synth_render (writes PCM to a NULL pointer).  Let it
+      -- go out of scope; the worker owns the production side.
     elseif buf.done then
       m.finished = true
     elseif buf.error then
       require("src.core.Logger").warn("chip audio: %s", tostring(buf.error))
+      if buf.traceback then
+        require("src.core.Logger").warn("chip audio traceback: %s",
+          tostring(buf.traceback))
+      end
       m.finished = true
     elseif buf.sd then
       if free > 0 then
@@ -290,6 +300,10 @@ local function updateThreaded()
         break
       end
     end
+  end
+  if not workerAlive() then
+    -- worker gone: nothing more will arrive; leave whatever is queued playing
+    return
   end
   if not m.started and not musicHeld then
     if (MUSIC_BUFFER_COUNT - m.source:getFreeBufferCount()) > 0 then

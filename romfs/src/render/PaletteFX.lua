@@ -383,9 +383,10 @@ end
 -- whether a draw issued right now would land in the redraw list -- the
 -- OBP bake is only correct when the replay can restore it after the zone
 -- pass (tilt's upright pass colorizes per-billboard instead, so sprites
--- there keep the raw sheet)
+-- there keep the raw sheet).  When shaders are disabled (3DS), there is no
+-- zone pass, so redraws are unneeded and skipped.
 function PaletteFX.spriteRedrawPassActive()
-  return currentPass == "world"
+  return currentPass == "world" and PaletteFX.shader() ~= nil
 end
 
 function PaletteFX.spriteRedraws()

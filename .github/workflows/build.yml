@@ -1,4 +1,4 @@
-name: Build 3DS
+name: Build 3DS CIA
 
 on:
   push:
@@ -26,16 +26,22 @@ jobs:
           sudo apt-get install -y -qq zip
 
       - name: Build
-        run: make clean && make -j$(nproc)
+        run: make clean && make cia
 
       - name: Prepare release package
         run: |
           mkdir -p package/3ds/gen1recomp3ds/roms
           mkdir -p package/3ds/gen1recomp3ds/mods
-          cp gen1recomp3ds.3dsx package/3ds/gen1recomp3ds/
+          cp gen1recomp3ds.cia package/3ds/gen1recomp3ds/
           cp .release/options.lua package/3ds/gen1recomp3ds/
           cp .release/PUT_YOUR_GB_AND_GBC_ROMS_HERE.txt "package/3ds/gen1recomp3ds/roms/PUT YOUR GB AND GBC ROMS HERE.txt"
           cp .release/PUT_YOUR_MODS_HERE.txt "package/3ds/gen1recomp3ds/mods/PUT YOUR MODS HERE.txt"
+          echo "## Installation" > package/3ds/gen1recomp3ds/INSTALL.txt
+          echo "" >> package/3ds/gen1recomp3ds/INSTALL.txt
+          echo "1. Copy the gen1recomp3ds.cia file to your SD card." >> package/3ds/gen1recomp3ds/INSTALL.txt
+          echo "2. Launch FBI on your 3DS and install the .cia file." >> package/3ds/gen1recomp3ds/INSTALL.txt
+          echo "3. Place your Pokemon Red, Blue, or Yellow ROM files in the roms/ folder." >> package/3ds/gen1recomp3ds/INSTALL.txt
+          echo "4. Launch gen1recomp from the Home Menu." >> package/3ds/gen1recomp3ds/INSTALL.txt
 
       - name: Create zip
         run: |

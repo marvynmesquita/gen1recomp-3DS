@@ -410,6 +410,13 @@ function Renderer:beginWorldPass()
     if self.worldCanvas and self.worldCanvas.release then self.worldCanvas:release() end
     self.worldCanvas = PixelCanvas.new(vw, vh, "nearest")
   end
+  -- Guard against a nil canvas (VRAM allocation failure on the 3DS can make
+  -- PixelCanvas.new / love.graphics.newCanvas return nil).  Bail out instead
+  -- of setCanvas(nil), which would switch to a null render target and crash.
+  if not self.worldCanvas then
+    self.worldActive = false
+    return
+  end
   self.worldActive = true
   PaletteFX.setPass("world")
   love.graphics.setCanvas(self.worldCanvas)
@@ -894,7 +901,7 @@ function Renderer:endFrame(zones, worldZones)
       love.graphics.rectangle("fill", 0, 0, ww, wh)
       love.graphics.setColor(1, 1, 1, 1)
     end
-  elseif self.worldActive then
+  elseif self.worldActive and self.worldCanvas then
     local sp = Zoom.scale(Sp)
     local sx, sy = sp / dpiX, sp / dpiY
     local wvw = self.worldCanvas:getWidth()
@@ -920,7 +927,7 @@ function Renderer:endFrame(zones, worldZones)
       -- feet-overdraw entries carry `colors` and re-colorize through the
       -- color-0-keyed shade-remap shader so they keep hiding sprite feet.
       local redraws = PaletteFX.spriteRedraws()
-      if redraws[1] then
+      if redraws[1] and PaletteFX.shader() then
         love.graphics.setColor(1, 1, 1, 1)
         love.graphics.setScissor(0, 0, ww, wh)
         local activeShader = nil

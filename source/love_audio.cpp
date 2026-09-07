@@ -12,6 +12,18 @@ extern "C" {
 
 extern "C" void sys_log(const char* format, ...);
 
+// Track whether ndspInit() succeeded.  When it fails (e.g. D880A7FA on some
+// 3DS builds) the DSP channels are never properly initialized, so
+// ndspChnSetPaused / ndspChnIsPaused operate on garbage state and
+// isPlaying() incorrectly returns true for ever.  Expose this flag so the
+// Lua waitSound check can skip the (broken) sound and let the battle queue
+// advance.
+static bool g_ndspReady = false;
+
+extern "C" void love_audio_setNdspReady(bool ready) {
+    g_ndspReady = ready;
+}
+
 // We need the layout of SoundData to read it directly
 struct SoundData {
     s16* data;
@@ -89,6 +101,17 @@ static int l_source_queue(lua_State* L) {
     }
     
     SoundData* sd = (SoundData*)luaL_checkudata(L, 2, "SoundData");
+    // Guard: if the backing PCM buffer was already released (either by a
+    // previous queue on this shared userdata or by freeSoundData from another
+    // thread), memcpy from NULL would hard-crash.  The samples were already
+    // copied into the source's linear buffer by that earlier queue, so this
+    // call is a no-op: report success so the caller RELEASES the buffer
+    // instead of holding it and letting ~43 buffers/second accumulate in the
+    // main thread's stopped-GC Lua heap (LUA_ERRMEM after a few minutes).
+    if (!sd->data) {
+        lua_pushboolean(L, 1);
+        return 1;
+    }
     
     // Find free buffer
     for (int i = 0; i < src->bufferCount; i++) {
@@ -101,7 +124,18 @@ static int l_source_queue(lua_State* L) {
             
             memcpy(src->linearMem[i], sd->data, size);
             DSP_FlushDataCache(src->linearMem[i], size);
-            
+
+            // The samples were copied into the source's own linear buffer, so
+            // the SoundData's malloc'd heap is no longer needed.  Free it right
+            // away instead of relying on the Lua GC: on the 3DS the collector
+            // is stopped during gameplay (collectgarbage("stop")), so deferring
+            // this to __gc let ~43 music buffers/second (~88KB/s) pile up in
+            // the main-thread heap and eventually trip LUA_ERRMEM
+            // ("not enough memory") mid-battle/map.  Deterministic release
+            // keeps the queue at a constant memory footprint.
+            free(sd->data);
+            sd->data = NULL;
+
             memset(&src->waveBufs[i], 0, sizeof(ndspWaveBuf));
             src->waveBufs[i].data_vaddr = src->linearMem[i];
             src->waveBufs[i].nsamples = sd->samples;
@@ -111,12 +145,10 @@ static int l_source_queue(lua_State* L) {
             DSP_FlushDataCache(&src->waveBufs[i], sizeof(ndspWaveBuf));
             
             // Check if buffer is silent
-            int non_zero = 0;
             s16 max_val = 0;
             s16* ptr = src->linearMem[i];
-            for (int k = 0; k < size / 2; k++) {
+            for (size_t k = 0; k < size / 2; k++) {
                 if (ptr[k] != 0) {
-                    non_zero++;
                     s16 abs_val = ptr[k] > 0 ? ptr[k] : -ptr[k];
                     if (abs_val > max_val) max_val = abs_val;
                 }
@@ -151,10 +183,14 @@ static int l_source_getFreeBufferCount(lua_State* L) {
 
 static int l_source_isPlaying(lua_State* L) {
     Source* src = (Source*)luaL_checkudata(L, 1, "Source");
+    // When ndspInit failed the DSP channels are never initialized, so
+    // ndspChnIsPaused returns garbage.  Report "not playing" so the Lua
+    // battle-queue waitSound check can advance and the game doesn't freeze
+    // waiting on a sound that can never finish.
+    if (!g_ndspReady) { lua_pushboolean(L, 0); return 1; }
     bool playing = false;
     if (src->isStatic) {
         // For static sources, check if the channel is playing and not paused.
-        u8 status = 0;
         // In citro3d, we don't have a direct "is playing" flag for static wavebufs that completed, 
         // but status becomes NDSP_WBUF_DONE.
         if (src->waveBufs[0].status != NDSP_WBUF_DONE && src->waveBufs[0].status != NDSP_WBUF_FREE) {
@@ -248,7 +284,7 @@ static int l_audio_newQueueableSource(lua_State* L) {
 
 static int l_audio_newSource(lua_State* L) {
     SoundData* sd = (SoundData*)luaL_checkudata(L, 1, "SoundData");
-    const char* type = luaL_optstring(L, 2, "static");
+    (void)luaL_optstring(L, 2, "static");
     
     Source* src = (Source*)lua_newuserdata(L, sizeof(Source));
     src->channel = g_nextChannel++;

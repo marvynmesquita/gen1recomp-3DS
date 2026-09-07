@@ -802,6 +802,9 @@ function YellowIntro:draw()
     self.pre:draw()
     return
   end
+  -- Stereoscopic 3D: Pika pops out (positive), background recesses (negative).
+  -- 0.3 matches Red/Blue intro depths.
+  love.graphics._parallax = -0.3
   love.graphics.setColor(1, 1, 1, 1)
   love.graphics.rectangle("fill", 0, 0, 160, 144)
   if self.bgCanvas then
@@ -842,7 +845,9 @@ function YellowIntro:draw()
       end
     end
   end
+  love.graphics._parallax = 0.3
   self:drawObjects()
+  love.graphics._parallax = 0
   love.graphics.setColor(1, 1, 1, 1)
 end
 

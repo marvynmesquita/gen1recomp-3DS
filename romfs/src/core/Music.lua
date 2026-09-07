@@ -82,8 +82,9 @@ end
 -- Called by Sound.play when a fanfare starts: fanfares own the music
 -- channels on the Game Boy, so the current song halts and resumes when
 -- the jingle ends (see update()).
-function Music.duckForFanfare(src)
+function Music.duckForFanfare(src, isMenuInterfaceSfx)
   if not src then return end
+  if isMenuInterfaceSfx then return end
   state.fanfare = src
   -- ChipAudio is what starts a chip song, so the pause below cannot hold one
   -- that has not started yet (nor one Music.play swaps in mid-jingle) (#398)

@@ -360,7 +360,8 @@ local function startSfx(data, name, def)
   local src = playPath(data, name, def)
   if not src then return end
   if ducks(data, name, def) then
-    require("src.core.Music").duckForFanfare(src)
+    local isMenuInterfaceSfx = (name == "Turn_On_PC" or name == "Turn_Off_PC" or name == "Enter_PC" or name == "Save")
+    require("src.core.Music").duckForFanfare(src, isMenuInterfaceSfx)
   end
   played("sfx", name)
   return src

@@ -18,10 +18,10 @@ int luaopen_bit(lua_State *L);
 #include <stdarg.h>
 #include <sys/stat.h>
 #include <dirent.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 static u64 g_last_slow_frame_log_ms = 0;
-static u64 g_last_log_write_ms = 0;
-static const u64 SYS_LOG_MIN_INTERVAL_MS = 250ULL;
 
 // Per-frame draw diagnostics collected by the graphics binding
 // (love_graphics.cpp).  Reset at the top of every frame, logged by the
@@ -46,23 +46,103 @@ void graphics_setScreenTarget(C3D_RenderTarget* target);
 void graphics_setScreenScale(float sx, float sy);
 }
 
+// Asynchronous RAM log buffer: SD card file writes (fopen/fclose) on the 3DS
+// take 150-200ms of synchronous disk I/O, which turned log writes during
+// gameplay into massive frame hitches. sys_log now appends instantly to a RAM
+// buffer and flushes to sdmc:/3ds/gen1recomp3ds/log.txt in a background thread.
+static char g_log_buffer_1[32768];
+static char g_log_buffer_2[32768];
+static char* g_log_current = g_log_buffer_1;
+static size_t g_log_current_len = 0;
+
+static LightEvent g_log_event;
+static LightLock g_log_lock;
+static bool g_log_quit = false;
+static Thread g_log_thread = nullptr;
+
+static void log_thread_func(void* arg) {
+    // Ensure the log directory exists.  This avoids a NULL devoptab crash
+    // on first launch when the launcher's main() mkdir() pass hasn't run yet
+    // (e.g. a process restart or after a failed import left /3ds missing).
+    mkdir("sdmc:/3ds", 0777);
+    mkdir("sdmc:/3ds/gen1recomp3ds", 0777);
+
+    // Persistent log file handle.  We keep it open to avoid the race where
+    // CacheFs.unmountVersion() remounts the SD card between open() and write().
+    // On error (e.g. device unmounted), we close the handle and retry on next flush.
+    int log_fd = -1;
+    bool log_fd_valid = false;
+
+    while (true) {
+        LightEvent_Wait(&g_log_event);
+        
+        char* buf_to_write = nullptr;
+        size_t len_to_write = 0;
+        
+        LightLock_Lock(&g_log_lock);
+        if (g_log_current_len > 0) {
+            buf_to_write = g_log_current;
+            len_to_write = g_log_current_len;
+            g_log_current = (g_log_current == g_log_buffer_1) ? g_log_buffer_2 : g_log_buffer_1;
+            g_log_current_len = 0;
+        }
+        LightEvent_Clear(&g_log_event);
+        LightLock_Unlock(&g_log_lock);
+        
+        if (buf_to_write && len_to_write > 0) {
+            // Ensure we have a valid log file handle
+            if (!log_fd_valid) {
+                log_fd = open("sdmc:/3ds/gen1recomp3ds/log.txt", O_WRONLY | O_APPEND | O_CREAT, 0644);
+                log_fd_valid = (log_fd >= 0);
+            }
+            if (log_fd_valid) {
+                ssize_t written = write(log_fd, buf_to_write, len_to_write);
+                if (written < 0 || (size_t)written != len_to_write) {
+                    // Write failed (e.g. device unmounted). Close stale handle and
+                    // drop this batch; we'll retry opening on the next flush.
+                    close(log_fd);
+                    log_fd = -1;
+                    log_fd_valid = false;
+                }
+            }
+        }
+        
+        if (g_log_quit) {
+            break;
+        }
+    }
+    if (log_fd_valid) close(log_fd);
+}
+
+static void flush_log_buffer() {
+    LightEvent_Signal(&g_log_event);
+}
+
 extern "C" void sys_log(const char* format, ...) {
     u64 now_ms = osGetTime();
-    if (now_ms - g_last_log_write_ms < SYS_LOG_MIN_INTERVAL_MS) {
-        return;
-    }
-    g_last_log_write_ms = now_ms;
+    char line[512];
+    int header_len = snprintf(line, sizeof(line), "[%lu] ", (unsigned long)now_ms);
+    if (header_len < 0 || header_len >= (int)sizeof(line)) return;
 
-    FILE* f = fopen("sdmc:/3ds/gen1recomp3ds/log.txt", "a");
-    if (f) {
-        fprintf(f, "[%lu] ", (unsigned long)now_ms);
-        va_list args;
-        va_start(args, format);
-        vfprintf(f, format, args);
-        va_end(args);
-        fprintf(f, "\n");
-        fclose(f);
+    va_list args;
+    va_start(args, format);
+    int msg_len = vsnprintf(line + header_len, sizeof(line) - header_len - 2, format, args);
+    va_end(args);
+
+    if (msg_len < 0) return;
+    size_t total_len = header_len + msg_len;
+    line[total_len++] = '\n';
+    line[total_len] = '\0';
+
+    LightLock_Lock(&g_log_lock);
+    if (g_log_current_len + total_len >= 32768) {
+        LightEvent_Signal(&g_log_event); // Flush when full
+    } else {
+        memcpy(g_log_current + g_log_current_len, line, total_len);
+        g_log_current_len += total_len;
+        LightEvent_Signal(&g_log_event); // Trigger background flush immediately!
     }
+    LightLock_Unlock(&g_log_lock);
 }
 
 static int l_print(lua_State* L) {
@@ -419,10 +499,14 @@ int main(int argc, char* argv[]) {
 local stubs = {'audio', 'data', 'filesystem', 'image', 'joystick', 'keyboard', 'math', 'mouse', 'sound', 'touch', 'window', 'event', 'graphics', 'system'}
 for _, name in ipairs(stubs) do
   love[name] = love[name] or {}
+  -- Preserve any existing __newindex metamethod (e.g. love.graphics's
+  -- parallax intercept that updates g_parallaxLayer via C++).  Only the
+  -- __index is replaced with the no-op fallback for missing methods.
+  local old_mt = getmetatable(love[name])
   setmetatable(love[name], {__index = function(t, k)
     if k == 'getFont' then return function() return love.graphics.newFont() end end
     return function() end
-  end})
+  end, __newindex = old_mt and rawget(old_mt, '__newindex')})
 end
 
 love.math = love.math or {}
@@ -691,6 +775,13 @@ package.path = 'sdmc:/3ds/gen1recomp3ds/?.lua;sdmc:/3ds/gen1recomp3ds/?/init.lua
     sys_log("gen1recomp3ds build: APT60 + gpuWait/luaDraw/drawCpp/texSwitches diagnostics + deep audio + btPath/btPics/btHuds/btAnim/btText/btOther battle profile");
     printf("Entering main loop...\n");
 
+    // Init log background thread
+    LightLock_Init(&g_log_lock);
+    LightEvent_Init(&g_log_event, RESET_STICKY);
+    s32 log_prio = 0;
+    svcGetThreadPriority(&log_prio, CUR_THREAD_HANDLE);
+    g_log_thread = threadCreate(log_thread_func, nullptr, 16 * 1024, log_prio - 1, -1, false);
+
     // Main loop
     while (aptMainLoop() && !love_input_want_quit()) {
         u64 t0 = osGetTime();
@@ -893,6 +984,13 @@ package.path = 'sdmc:/3ds/gen1recomp3ds/?.lua;sdmc:/3ds/gen1recomp3ds/?/init.lua
         "end";
     luaL_dostring(L, quit_script);
     svcSleepThread(50000000); // 50ms to allow thread to exit
+
+    g_log_quit = true;
+    flush_log_buffer();
+    if (g_log_thread) {
+        threadJoin(g_log_thread, U64_MAX);
+        threadFree(g_log_thread);
+    }
 
     lua_close(L);
     ndspExit();
