@@ -333,6 +333,38 @@ static int l_listdir(lua_State* L) {
     return 1;
 }
 
+// ---- SD path probe (love.filesystem.getInfo) --------------------------------
+// Returns { type = "file", size = n } for files, { type = "directory" } for
+// directories, or nil when nothing exists at the path.  The old Lua-only
+// getInfo used io.open which can never open a directory, so the mod loader's
+// _discover() (which checks fs.getInfo("mods/<id>").type == "directory")
+// never found mod folders on the SD card.
+static int l_getinfo(lua_State* L) {
+    const char* path = luaL_checkstring(L, 1);
+    char fullpath[512];
+    if (strncmp(path, "sdmc:", 5) == 0 || strncmp(path, "romfs:", 6) == 0) {
+        snprintf(fullpath, sizeof(fullpath), "%s", path);
+    } else {
+        snprintf(fullpath, sizeof(fullpath), "sdmc:/3ds/gen1recomp3ds/%s", path);
+    }
+    struct stat st;
+    if (stat(fullpath, &st) != 0) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_newtable(L);
+    if (S_ISDIR(st.st_mode)) {
+        lua_pushstring(L, "directory");
+        lua_setfield(L, -2, "type");
+    } else {
+        lua_pushstring(L, "file");
+        lua_setfield(L, -2, "type");
+        lua_pushinteger(L, (lua_Integer)st.st_size);
+        lua_setfield(L, -2, "size");
+    }
+    return 1;
+}
+
 static int l_timer_getTime(lua_State* L) {
     // High-resolution timer: svcGetSystemTick() runs at ~268MHz, giving
     // sub-microsecond resolution (osGetTime() is 1ms-granular, which made
@@ -453,6 +485,9 @@ int main(int argc, char* argv[]) {
     // Directory listing (SD card) for the launcher's ROM picker.
     lua_pushcfunction(L, l_listdir);
     lua_setglobal(L, "_listdir");
+    // Path probe for getInfo: detects both files and directories.
+    lua_pushcfunction(L, l_getinfo);
+    lua_setglobal(L, "_getinfo");
 
     // Setup global "love" table
     lua_newtable(L);
@@ -519,22 +554,16 @@ love.image.newImageData = false -- trigger headless fallbacks
 -- cache on SD overlays the romfs root cache (Red).
 love.filesystem.getInfo = function(path)
   local prefix = _activeCachePrefix or ""
-  local function probe(full)
-    local f = io.open(full, 'rb')
-    if f then
-      local size = f:seek('end')
-      f:close()
-      return { type = 'file', size = size }
-    end
-    return nil
-  end
   if prefix ~= "" then
-    local info = probe('sdmc:/3ds/gen1recomp3ds/' .. prefix .. path)
+        local info = _getinfo(prefix .. path)
     if info then return info end
   end
-  local info = probe('sdmc:/3ds/gen1recomp3ds/' .. path)
-  if info then return info end
-  return probe('romfs:/' .. path)
+    local info = _getinfo(path)
+    if info then return info end
+    if path:sub(1, 6) ~= 'romfs:' and path:sub(1, 5) ~= 'sdmc:' then
+        return _getinfo('romfs:/' .. path)
+    end
+    return nil
 end
 love.filesystem.getRealDirectory = function(path) return 'sdmc:/3ds/gen1recomp3ds' end
 love.filesystem.getUserDirectory = function() return 'sdmc:/3ds/gen1recomp3ds' end
