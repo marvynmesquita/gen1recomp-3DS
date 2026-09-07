@@ -24,6 +24,10 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq zip
+      - name: Install devkitPro 3DS tools
+        run: |
+          sudo dkp-pacman -Syy --noconfirm
+          sudo dkp-pacman -S --noconfirm makerom
 
       - name: Build
         run: make clean && make cia

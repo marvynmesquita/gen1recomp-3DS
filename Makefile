@@ -36,6 +36,12 @@ APP_AUTHOR	:=	marvynmesquita
 APP_VERSION	:=	1.0
 
 #---------------------------------------------------------------------------------
+# Tool resolution: prefer system PATH, fall back to vendored tools/
+#---------------------------------------------------------------------------------
+BANNERTOOL	:=	$(shell command -v bannertool 2>/dev/null || (test -x $(CURDIR)/tools/bannertool && echo $(CURDIR)/tools/bannertool))
+MAKEROM		:=	$(shell command -v makerom 2>/dev/null)
+
+#---------------------------------------------------------------------------------
 # options for code generation
 #---------------------------------------------------------------------------------
 ARCH	:=	-march=armv6k -mtune=mpcore -mfloat-abi=hard -mtp=soft
@@ -149,7 +155,7 @@ cia:
 	@$(MAKE) all
 	@$(MAKE) build-logo build-banner
 	@echo "Building CIA..."
-	@makerom -f cia -o $(CURDIR)/$(TARGET).cia -elf $(CURDIR)/$(TARGET).elf -icon $(CURDIR)/$(TARGET).smdh -banner $(BUILD)/banner.bin -logo $(BUILD)/logo.bin -rsf $(CURDIR)/$(TARGET).rsf -target t -exefslogo -v 2>&1
+	@$(MAKEROM) -f cia -o $(CURDIR)/$(TARGET).cia -elf $(CURDIR)/$(TARGET).elf -icon $(CURDIR)/$(TARGET).smdh -banner $(BUILD)/banner.bin -logo $(BUILD)/logo.bin -rsf $(CURDIR)/$(TARGET).rsf -target t -exefslogo -v 2>&1
 	@echo "CIA built: $(TARGET).cia"
 
 build-logo:
@@ -160,8 +166,8 @@ build-banner:
 	@mkdir -p $(BUILD)
 	@if [ -f $(CURDIR)/assets/banner/banner_model.cgfx ]; then \
 		    echo "3D banner: using CGFX model assets/banner/banner_model.cgfx"; \
-		    $(CURDIR)/tools/bannertool makecwav -i $(CURDIR)/assets/pk_sample.wav -o /tmp/banner_adpcm.cwav; \
-		    $(CURDIR)/tools/bannertool makebanner -ci $(CURDIR)/assets/banner/banner_model.cgfx -ca /tmp/banner_adpcm.cwav -o $(BUILD)/banner.bin; \
+		    $(BANNERTOOL) makecwav -i $(CURDIR)/assets/pk_sample.wav -o /tmp/banner_adpcm.cwav; \
+		    $(BANNERTOOL) makebanner -ci $(CURDIR)/assets/banner/banner_model.cgfx -ca /tmp/banner_adpcm.cwav -o $(BUILD)/banner.bin; \
 	elif command -v python3 >/dev/null 2>&1 && python3 -c "from PIL import Image" 2>/dev/null; then \
 		    python3 -c "\
 from PIL import Image; \
@@ -175,15 +181,18 @@ from PIL import Image; \
 	banner.paste(logo, (x, y), logo); \
 banner.save('/tmp/banner_centered.png'); \
 "; \
-		    $(CURDIR)/tools/bannertool makecwav -i $(CURDIR)/assets/pk_sample.wav -o /tmp/banner_adpcm.cwav; \
-		    $(CURDIR)/tools/bannertool makebanner -i /tmp/banner_centered.png -ca /tmp/banner_adpcm.cwav -o $(BUILD)/banner.bin; \
+		    $(BANNERTOOL) makecwav -i $(CURDIR)/assets/pk_sample.wav -o /tmp/banner_adpcm.cwav; \
+		    $(BANNERTOOL) makebanner -i /tmp/banner_centered.png -ca /tmp/banner_adpcm.cwav -o $(BUILD)/banner.bin; \
 		elif command -v sips >/dev/null 2>&1; then \
 			echo "WARNING: Pillow not available. Install with: pip3 install Pillow"; \
 			echo "Using fallback sips (may stretch image)..."; \
 			sips -z 128 256 $(CURDIR)/romfs/assets/logo/logo.png --out /tmp/banner_256x128.png >/dev/null 2>&1; \
-			$(CURDIR)/tools/bannertool makebanner -i /tmp/banner_256x128.png -a $(CURDIR)/assets/pk_sample.wav -o $(BUILD)/banner.bin; \
+			$(BANNERTOOL) makebanner -i /tmp/banner_256x128.png -a $(CURDIR)/assets/pk_sample.wav -o $(BUILD)/banner.bin; \
+		elif [ -f $(CURDIR)/assets/banner.bin ]; then \
+			echo "No banner build tools available. Using pre-built assets/banner.bin"; \
+			cp $(CURDIR)/assets/banner.bin $(BUILD)/banner.bin; \
 		else \
-			echo "WARNING: No banner.bin found and sips not available. Using empty banner."; \
+			echo "WARNING: No banner tools and no pre-built banner.bin. Creating empty banner."; \
 			dd if=/dev/zero of=$(BUILD)/banner.bin bs=1 count=32 2>/dev/null; \
 		fi
 
