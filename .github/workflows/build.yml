@@ -26,10 +26,11 @@ jobs:
           sudo apt-get install -y -qq zip
       - name: Install devkitPro 3DS tools
         run: |
-          # Download makerom prebuilt binary (not in devkitPro packages)
-          curl -sL -o /tmp/makerom.zip https://github.com/3DSGuy/Project_CTR/releases/download/makerom-v0.19.0/makerom-v0.19.0-ubuntu_x86_64.zip
-          cd /tmp && unzip -o makerom.zip
-          sudo cp /tmp/makerom /opt/devkitpro/tools/bin/makerom
+          # Build makerom from source (prebuilt binary needs GLIBC_2.38+
+          # which is not available in the devkitpro container)
+          git clone --depth=1 https://github.com/3DSGuy/Project_CTR.git /tmp/Project_CTR
+          cd /tmp/Project_CTR/makerom && make
+          sudo cp /tmp/Project_CTR/makerom/bin/makerom /opt/devkitpro/tools/bin/makerom
           sudo chmod +x /opt/devkitpro/tools/bin/makerom
           # Verify installation
           echo "=== makerom verification ==="
