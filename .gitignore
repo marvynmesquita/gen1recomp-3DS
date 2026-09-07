@@ -92,3 +92,7 @@ repro_*/
 test_align*
 test_morton*
 a.out
+# Vendored third-party mods (test fixtures)
+romfs/mods/*
+!romfs/mods/example_mew_starter/**
+!romfs/mods/examples/**

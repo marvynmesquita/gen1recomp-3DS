@@ -1,10 +1,15 @@
-Place your mod folders in this directory.
+Place your mods in this directory. Each mod is its own subfolder.
 
-Each mod should be its own subfolder containing a modinfo.lua
-file at its root.
+The 3DS reads mods from here before booting a game. Mods can be:
+      * a .zip downloaded from a mod's GitHub releases (imported via the
+            launcher), or
+      * an already-extracted folder -- drop the mod's folder here directly
+            (the 3DS can't unpack zips, so extract on a PC first).
+
+A mod folder must contain a manifest.json at its root:
+      sdmc:/3ds/gen1recomp3ds/mods/versaovermelha/manifest.json
+      sdmc:/3ds/gen1recomp3ds/mods/versaovermelha/main.lua
+      sdmc:/3ds/gen1recomp3ds/mods/versaovermelha/lang/...
 
 NOTE: Mod support is a work in progress (WIP).
-      Not all mod features are functional yet.
-
-Example structure:
-  sdmc:/3ds/gen1recomp3ds/mods/my_mod/modinfo.lua
+                  Not all mod features are functional yet.
