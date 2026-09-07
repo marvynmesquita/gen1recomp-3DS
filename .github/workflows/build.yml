@@ -29,6 +29,7 @@ jobs:
           # Build makerom from source (prebuilt binary needs GLIBC_2.38+
           # which is not available in the devkitpro container)
           git clone --depth=1 https://github.com/3DSGuy/Project_CTR.git /tmp/Project_CTR
+          cd /tmp/Project_CTR/makerom && make deps
           cd /tmp/Project_CTR/makerom && make
           sudo cp /tmp/Project_CTR/makerom/bin/makerom /opt/devkitpro/tools/bin/makerom
           sudo chmod +x /opt/devkitpro/tools/bin/makerom
