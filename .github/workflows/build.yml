@@ -31,10 +31,20 @@ jobs:
           cd /tmp && unzip -o makerom.zip
           sudo cp /tmp/makerom /opt/devkitpro/tools/bin/makerom
           sudo chmod +x /opt/devkitpro/tools/bin/makerom
-          /opt/devkitpro/tools/bin/makerom --help 2>&1 | head -3 || echo "makerom installed"
+          # Verify installation
+          echo "=== makerom verification ==="
+          which makerom || echo "makerom NOT in PATH"
+          makerom --version 2>&1 || echo "makerom --version failed"
+          echo "=== BANNERTOOL check ==="
+          which bannertool 2>/dev/null || echo "bannertool not in PATH (will use fallback banner.bin)"
+          echo "=== end verification ==="
 
       - name: Build
-        run: make clean && make cia
+        run: |
+          echo "=== Build step PATH ==="
+          echo "$PATH"
+          make clean
+          make cia
 
       - name: Prepare release package
         run: |
